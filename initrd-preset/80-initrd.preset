@@ -1,0 +1,2 @@
+enable reboot.target
+enable rescue.target
