@@ -1,7 +1,7 @@
 #!/bin/bash
 
 strip_quotes() {
-  local len=${#1} quotes=$'[\'"]' str=${!1}
+  local len=${#1} quotes="['"'"]' str=${!1}
 
   if [[ ${str:0:1} = ${str: -1} && ${str:0:1} = $quotes ]]; then
     printf -v "$1" %s "${str:1:-1}"
@@ -30,7 +30,7 @@ add_udev_rule() {
         for pair in "${rule[@]}"; do
             IFS=' =' read -r key value <<< "$pair"
             case $key in
-                RUN@({program}|+)|IMPORT{program}|ENV{REMOVE_CMD})
+                RUN{program}|RUN+|IMPORT{program}|ENV{REMOVE_CMD})
                     strip_quotes 'value'
                     # just take the first word as the binary name
                     binary=${value%% *}
@@ -51,7 +51,7 @@ add_systemd_unit() {
 
     local unit= rule= entry= key= value= binary= dep=
 
-    unit=$(PATH=/usr/lib/systemd/system:/lib/systemd/system type -P "$1")
+    unit=$(PATH=/usr/lib/systemd/system:/lib/systemd/system type -P -- "$1")
     if [[ -z $unit ]]; then
         # complain about not found unit file
         return 1
@@ -63,8 +63,7 @@ add_systemd_unit() {
         read -ra values <<< "$values"
 
         case $key in
-            Requires|OnFailure)
-                # only add hard dependencies (not Wants)
+            Requires|Wants|Sockets|OnFailure)
                 map add_systemd_unit "${values[@]}"
                 ;;
             Exec*)
@@ -93,77 +92,93 @@ add_systemd_unit() {
 }
 
 build() {
-    local rules unit
+    local applet
 
     # from base
-    add_binary /bin/mount
-    add_binary /usr/bin/kmod /usr/bin/modprobe
+    add_binary /usr/lib/initcpio/busybox /bin/busybox
+
+    for applet in $(/usr/lib/initcpio/busybox --list); do
+        add_symlink "/usr/bin/$applet" busybox
+    done
+
+    # add kmod with applet symlinks
+    add_binary kmod
+    for applet in {dep,ins,rm,ls}mod mod{probe,info}; do
+        add_symlink "/usr/bin/$applet" kmod
+    done
+
+    # these busybox applets don't work in emergency mode, use systemctl
+    for applet in halt poweroff reboot shutdown; do
+        add_symlink "/usr/bin/$applet" systemctl
+    done
+
+    add_binary blkid
+    add_binary mount
+
+    # use systemd as init process
     add_binary /usr/lib/systemd/systemd /init
 
+    # used in emergency and rescue modes
     map add_binary \
-        /usr/lib/systemd/systemd-hibernate-resume \
-        /usr/lib/systemd/system-generators/systemd-hibernate-resume-generator \
-        /usr/bin/systemd-tmpfiles
+        /usr/bin/journalctl \
+        /usr/bin/sulogin \
+        /usr/lib/systemd/systemd-shutdown
 
     # generators
     map add_file \
         /usr/lib/systemd/system-generators/systemd-fstab-generator \
-        /usr/lib/systemd/system-generators/systemd-gpt-auto-generator
+        /usr/lib/systemd/system-generators/systemd-gpt-auto-generator \
+        /usr/lib/systemd/system-generators/systemd-hibernate-resume-generator
 
-    # udev rules and systemd units
-    map add_udev_rule "$rules" \
+    # udev rules
+    map add_udev_rule \
             50-udev-default.rules \
             60-persistent-storage.rules \
             64-btrfs.rules \
             80-drivers.rules \
             99-systemd.rules
 
+    # targets
+    map add_systemd_unit \
+            halt.target \
+            initrd.target \
+            kexec.target \
+            poweroff.target \
+            reboot.target \
+            rescue.target
+
+    # default target
+    add_symlink "/usr/lib/systemd/system/default.target" "initrd.target"
+
+    # units activated using ExecStart=
     map add_systemd_unit \
             initrd-cleanup.service \
-            initrd-fs.target \
-            initrd-parse-etc.service \
-            initrd-root-fs.target \
-            initrd-switch-root.service \
-            initrd-switch-root.target \
-            initrd-udevadm-cleanup-db.service \
-            initrd.target \
+            initrd-switch-root.target
+
+    # units hand-picked from sysinit.target.wants
+    map add_systemd_unit \
             kmod-static-nodes.service \
-            local-fs.target \
-            local-fs-pre.target \
-            paths.target \
-            reboot.target \
-            slices.target \
-            sockets.target \
-            swap.target \
-            systemd-fsck@.service \
-            systemd-hibernate-resume@.service \
-            systemd-journald.service \
-            systemd-journald-audit.socket \
-            systemd-journald-dev-log.socket \
+            systemd-modules-load.service \
             systemd-tmpfiles-setup-dev.service \
-            systemd-udev-trigger.service \
-            systemd-udevd-control.socket \
-            systemd-udevd-kernel.socket \
-            systemd-udevd.service \
-            timers.target
+            systemd-udev-trigger.service
 
-    add_symlink "/usr/lib/systemd/system/default.target" "initrd.target"
-    add_symlink "/usr/lib/systemd/system/ctrl-alt-del.target" "reboot.target"
+    # unit templates
+    map add_systemd_unit \
+            systemd-fsck@.service \
+            systemd-hibernate-resume@.service
 
-    # udev wants /etc/group since it doesn't launch with --resolve-names=never
-    add_file "/etc/nsswitch.conf"
-    add_binary "$(readlink -f /usr/lib/libnss_files.so)"
-    add_file "/etc/passwd"
-    add_file "/etc/group"
+    # presets and drop-in snippets
+    find /{etc,usr/lib}/systemd/initrd{,-preset} -type f -print0 2>/dev/null | \
+        while read -d '' file; do
+            add_file "$file" "${file//\/systemd\/initrd/\/systemd\/system}"
+	done
 }
 
 help() {
     cat <<HELPEOF
 This will install a basic systemd setup in your initramfs, and is meant to
 replace the 'base', 'usr', 'udev' and 'timestamp' hooks. Other hooks with runtime
-components will need to be ported, and will not work as intended. You also may
-wish to still include the 'base' hook (before this hook) to ensure that a
-rescue shell exists on your initramfs.
+components will need to be ported, and will not work as intended.
 HELPEOF
 }
 
