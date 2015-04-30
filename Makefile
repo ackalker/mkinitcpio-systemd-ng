@@ -7,7 +7,6 @@ install:
 	install -Dm644 \
 		initcpio-install-systemd \
 		$(DESTDIR)/usr/lib/initcpio/install/systemd-ng
-	$(call install-drop-in,emergency.service,keyboard.conf,25)
 	$(call install-drop-in,emergency.service,sulogin-force.conf,50)
 	$(call install-drop-in,rescue.service,sulogin-force.conf,50)
 	$(call install-drop-in,systemd-udevd.service,systemd-udevd-resolve-never.conf,50)
