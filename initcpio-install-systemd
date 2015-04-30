@@ -171,7 +171,7 @@ build() {
     find /{etc,usr/lib}/systemd/initrd{,-preset} -type f -print0 2>/dev/null | \
         while read -d '' file; do
             add_file "$file" "${file//\/systemd\/initrd/\/systemd\/system}"
-	done
+        done
 }
 
 help() {
