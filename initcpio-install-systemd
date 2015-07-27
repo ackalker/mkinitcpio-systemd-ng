@@ -108,6 +108,9 @@ build() {
         add_symlink "/usr/bin/$applet" kmod
     done
 
+    # early loaded kernel modules hardcoded in systemd binary
+    add_module ip_tables
+
     # these busybox applets don't work in emergency mode, use systemctl
     for applet in halt poweroff reboot shutdown; do
         add_symlink "/usr/bin/$applet" systemctl
